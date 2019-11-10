@@ -1,0 +1,13 @@
+{
+    "device": "cuda",
+    "dataset": {
+        "resize_shape": [800, 288],
+        "dataset_name": "Tusimple",
+        "batch_size": 4
+    },
+    "model": {},
+    "optim": {
+        "lr": 0.001
+    },
+    "MAX_ITER": 5
+}
