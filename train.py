@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import json
 import os
 import shutil
@@ -8,13 +9,14 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from config import *
 import dataset
+from config import *
 from model import LaneNet
-from utils.tensorboard import TensorBoard
-from utils.transforms import *
 from utils.lr_scheduler import PolyLR
 from utils.postprocess import embedding_post_process
+from utils.tensorboard import TensorBoard
+from utils.transforms import *
+from utils.util import Subsample
 
 
 def parse_args():
@@ -56,12 +58,22 @@ transform_val = Compose(Resize(resize_shape), ToTensor(),
 val_dataset = Dataset_Type(Dataset_Path[dataset_name], "val", transform_val)
 val_loader = DataLoader(val_dataset, batch_size=8, collate_fn=val_dataset.collate, num_workers=4)
 
+
+# Tests
+testing = False
+test_size = 0.1
+if testing:
+    train_loader = Subsample(train_loader, test_size)
+    val_loader = Subsample(val_loader, test_size)
+
+
 # ------------ preparation ------------
 net = LaneNet(pretrained=True, **exp_cfg['model'])
 net = net.to(device)
 net = torch.nn.DataParallel(net)
 
-optimizer = optim.SGD(net.parameters(), **exp_cfg['optim'])
+optimizer = optim.Adam(net.parameters(), **exp_cfg['optim'])
+# optimizer = optim.SGD(net.parameters(), **exp_cfg['optim'])
 lr_scheduler = PolyLR(optimizer, 0.9, exp_cfg['MAX_ITER'])
 best_val_loss = 1e6
 
@@ -85,16 +97,16 @@ def train(epoch):
         output = net(img, segLabel)
         embedding = output['embedding']
         binary_seg = output['binary_seg']
-        seg_loss = output['seg_loss']
-        var_loss = output['var_loss']
-        dist_loss = output['dist_loss']
-        reg_loss = output['reg_loss']
+        seg_loss = output['loss_seg']
+        var_loss = output['loss_var']
+        dist_loss = output['loss_dist']
+        #reg_loss = output['loss_reg']
         loss = output['loss']
         if isinstance(net, torch.nn.DataParallel):
             seg_loss = seg_loss.sum()
             var_loss = var_loss.sum()
             dist_loss = dist_loss.sum()
-            reg_loss = reg_loss.sum()
+            #reg_loss = reg_loss.sum()
             loss = output['loss'].sum()
 
         loss.backward()
@@ -106,7 +118,7 @@ def train(epoch):
         train_loss_bin_seg += seg_loss.item()
         train_loss_var += var_loss.item()
         train_loss_dist += dist_loss.item()
-        train_loss_reg += reg_loss.item()
+        #train_loss_reg += reg_loss.item()
         progressbar.set_description("batch loss: {:.3f}".format(loss.item()))
         progressbar.update(1)
 
@@ -115,7 +127,7 @@ def train(epoch):
         tensorboard.scalar_summary("train_loss_bin_seg", train_loss_bin_seg, epoch)
         tensorboard.scalar_summary("train_loss_var", train_loss_var, epoch)
         tensorboard.scalar_summary("train_loss_dist", train_loss_dist, epoch)
-        tensorboard.scalar_summary("train_loss_reg", train_loss_reg, epoch)
+        #tensorboard.scalar_summary("train_loss_reg", train_loss_reg, epoch)
 
     progressbar.close()
     tensorboard.writer.flush()
@@ -144,7 +156,7 @@ def val(epoch):
     val_loss_bin_seg = 0
     val_loss_var = 0
     val_loss_dist = 0
-    val_loss_reg = 0
+    #val_loss_reg = 0
     progressbar = tqdm(range(len(val_loader)))
 
     with torch.no_grad():
@@ -155,20 +167,20 @@ def val(epoch):
             output = net(img, segLabel)
             embedding = output['embedding']
             binary_seg = output['binary_seg']
-            seg_loss = output['seg_loss']
-            var_loss = output['var_loss']
-            dist_loss = output['dist_loss']
-            reg_loss = output['reg_loss']
+            seg_loss = output['loss_seg']
+            var_loss = output['loss_var']
+            dist_loss = output['loss_dist']
+            #reg_loss = output['reg_loss']
             loss = output['loss']
             if isinstance(net, torch.nn.DataParallel):
                 seg_loss = seg_loss.sum()
                 var_loss = var_loss.sum()
                 dist_loss = dist_loss.sum()
-                reg_loss = reg_loss.sum()
+                #reg_loss = reg_loss.sum()
                 loss = output['loss'].sum()
 
             # visualize validation every 5 frame, 50 frames in all
-            gap_num = 5
+            gap_num = 20
             if batch_idx%gap_num == 0 and batch_idx < 50 * gap_num:
                 color = np.array([[255, 125, 0], [0, 255, 0], [0, 0, 255], [0, 255, 255]], dtype='uint8') # bgr
                 display_imgs = []
@@ -200,13 +212,13 @@ def val(epoch):
                     display_imgs.append(img)
                     display_imgs.append(bin_seg_img)
 
-                tensorboard.image_summary("img_{}".format(batch_idx), display_imgs, epoch)
+                tensorboard.image_summary(f"img_{batch_idx}", display_imgs, epoch)
 
             val_loss += loss.item()
             val_loss_bin_seg += seg_loss.item()
             val_loss_var += var_loss.item()
             val_loss_dist += dist_loss.item()
-            val_loss_reg += reg_loss.item()
+            #val_loss_reg += reg_loss.item()
 
             progressbar.set_description("batch loss: {:.3f}".format(loss.item()))
             progressbar.update(1)
@@ -216,7 +228,7 @@ def val(epoch):
     tensorboard.scalar_summary("val_loss_bin_seg", val_loss_bin_seg, epoch)
     tensorboard.scalar_summary("val_loss_var", val_loss_var, epoch)
     tensorboard.scalar_summary("val_loss_dist", val_loss_dist, epoch)
-    tensorboard.scalar_summary("val_loss_reg", val_loss_reg, epoch)
+    #tensorboard.scalar_summary("val_loss_reg", val_loss_reg, epoch)
     tensorboard.writer.flush()
 
     print("------------------------\n")
